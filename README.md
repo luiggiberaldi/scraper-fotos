@@ -1,39 +1,55 @@
-# Buscador de Fotos de Supermercados
+# Buscador de Fotos — Supermercados y Farmacia VE
 
-Busca y descarga fotos de productos de 3 supermercados venezolanos:
-- TuZonaMarket
-- CocoMercado
-- InstaMarket
+App de escritorio (Electron) que busca y descarga fotos de productos de
+supermercados y farmacias venezolanas. Sirve para armar catálogos con imagen
+(p. ej. los productos de PreciosAlDía Pro).
 
-## Instalacion
+Fuentes por modo:
+
+- **Supermercado:** TuZonaMarket, CocoMercado, InstaMarket
+- **Farmacia:** Farmatodo, Locatel, DuckDuckGo (imágenes)
+
+## Instalación
 
 ```bash
-cd buscador-fotos-super
 npm install
 ```
 
 ## Uso
 
 ```bash
-# Buscar un producto
-node src/index.js --name "Harina Pan 1kg"
-
-# Buscar y descargar automaticamente
-node src/index.js --name "Aceite" --download
-
-# Ver todos los resultados con umbral bajo
-node src/index.js --name "Leche" --all --threshold 0.2
+npm start          # abre la app
+npm run build      # genera el instalador de Windows (dist/)
 ```
 
-## Opciones
+En la app:
 
-| Opcion | Descripcion | Default |
-|--------|-------------|---------|
-| `-n, --name` | Nombre del producto | (requerido) |
-| `-d, --download` | Descargar la mejor imagen | false |
-| `-a, --all` | Mostrar todos los resultados | false |
-| `-t, --threshold` | Umbral minimo de similaridad | 0.3 |
+1. Elige el modo (supermercado o farmacia).
+2. Busca un producto para ver resultados rankeados, o usa **Importar**
+   para cargar un CSV/Markdown/TXT con la lista de productos y descargar
+   en lote (una o varias fotos por producto).
+3. Las imágenes caen en la carpeta `downloads/`.
 
-## Descargas
+El CSV de farmacia usa las columnas `generico, comercial, laboratorio,
+concentracion` (ver `productos_farmacia.csv` como ejemplo).
 
-Las imagenes se guardan en la carpeta `downloads/` con nombre basado en el producto.
+## Cómo rankea
+
+`electron/search.js`: normaliza la búsqueda (acentos, unidades, stopwords),
+expande sinónimos de marcas venezolanas, y puntúa con TF-IDF + Levenshtein
+difuso. Genera variaciones de la búsqueda si la primera no da resultados.
+
+## Opcionales
+
+- **Marca de agua** y **fondo** (blanco u otro color): vienen **apagados**
+  por defecto. Se configuran en la app y se aplican al descargar o en lote
+  sobre imágenes locales.
+- **Caché** (`.cache/`): resultados 24h, "no encontrados" 1h. Se puede
+  limpiar desde la app.
+
+## Notas
+
+- Las descargas siguen redirects (máx 5) y nunca sobrescriben: si el nombre
+  ya existe se agrega sufijo `-2`, `-3`...
+- El scraping depende de la estructura de cada tienda; si una fuente cambia
+  su web, hay que actualizar su selector en `electron/main.js`.

@@ -602,50 +602,70 @@ async function applyWatermark(imageBuffer) {
   }
 }
 
+// Descarga un buffer siguiendo redirects (máx 5) con timeout de 15s.
+// Centraliza la lógica que estaba duplicada y corrige el bug del handler
+// 'download-image', que llamaba ipcMain.handle() como si fuera invoke()
+// cuando la URL redirigía (TypeError -> la descarga colgaba 15s y fallaba).
+function downloadBuffer(url, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    const client = url.startsWith('https') ? https : http;
+    const request = client.get(url, { headers: { 'User-Agent': USER_AGENT } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        if (redirectsLeft <= 0) {
+          reject(new Error('Demasiados redirects'));
+          return;
+        }
+        const nextUrl = new URL(res.headers.location, url).toString();
+        downloadBuffer(nextUrl, redirectsLeft - 1).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    });
+    request.on('error', reject);
+    request.setTimeout(15000, () => { request.destroy(); reject(new Error('Timeout')); });
+  });
+}
+
+// Ruta única: si el archivo ya existe (p. ej. dos productos con el mismo
+// nombre normalizado), agrega sufijo -2, -3... en vez de sobrescribir.
+function uniqueFilePath(dir, base, ext) {
+  let candidate = path.join(dir, `${base}${ext}`);
+  let i = 2;
+  while (fs.existsSync(candidate)) {
+    candidate = path.join(dir, `${base}-${i}${ext}`);
+    i++;
+  }
+  return candidate;
+}
+
 // Download IPC
 ipcMain.handle('download-image', async (event, { url, name }) => {
   if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
   const ext = path.extname(new URL(url).pathname) || '.jpg';
   const safeName = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
-  const filename = `${safeName}${ext}`;
-  const filepath = path.join(DOWNLOAD_DIR, filename);
+  const filepath = uniqueFilePath(DOWNLOAD_DIR, safeName, ext);
 
-  return new Promise((resolve, reject) => {
-    const client = url.startsWith('https') ? https : http;
-    const request = client.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return ipcMain.handle('download-image', { url: res.headers.location, name }).then(resolve).catch(reject);
-      }
-      if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode}`));
-        return;
-      }
+  let imageBuffer = await downloadBuffer(url);
 
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', async () => {
-        try {
-          let imageBuffer = Buffer.concat(chunks);
+  // Apply background if enabled
+  imageBuffer = await applyBackground(imageBuffer);
 
-          // Apply background if enabled
-          imageBuffer = await applyBackground(imageBuffer);
+  // Apply watermark if enabled
+  imageBuffer = await applyWatermark(imageBuffer);
 
-          // Apply watermark if enabled
-          imageBuffer = await applyWatermark(imageBuffer);
-
-          // Save to file
-          fs.writeFileSync(filepath, imageBuffer);
-          resolve(filepath);
-        } catch (err) {
-          reject(err);
-        }
-      });
-      res.on('error', reject);
-    });
-    request.on('error', reject);
-    request.setTimeout(15000, () => { request.destroy(); reject(new Error('Timeout')); });
-  });
+  // Save to file
+  fs.writeFileSync(filepath, imageBuffer);
+  return filepath;
 });
 
 ipcMain.handle('open-downloads', () => {
@@ -869,38 +889,14 @@ ipcMain.handle('batch-download', async (event, { products, imagesPerProduct = 1,
         const ext = path.extname(new URL(bestResult.src).pathname) || '.jpg';
         const safeName = query.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 50);
         
-        // File naming: product-1.jpg, product-2.jpg, etc.
-        const filename = topResults.length > 1 
-          ? `${safeName}-${j + 1}${ext}`
-          : `${safeName}${ext}`;
-        const filepath = path.join(DOWNLOAD_DIR, filename);
+        // File naming: product-1.jpg, product-2.jpg, etc. Si el nombre ya
+        // existe (otro producto normalizó igual), se agrega sufijo -2, -3...
+        const baseName = topResults.length > 1 ? `${safeName}-${j + 1}` : safeName;
+        const filepath = uniqueFilePath(DOWNLOAD_DIR, baseName, ext);
+        const filename = path.basename(filepath);
 
         try {
-          const imageBuffer = await new Promise((resolve, reject) => {
-            const client = bestResult.src.startsWith('https') ? https : http;
-            const request = client.get(bestResult.src, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-              if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                const redirectClient = res.headers.location.startsWith('https') ? https : http;
-                redirectClient.get(res.headers.location, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res2) => {
-                  const chunks = [];
-                  res2.on('data', (chunk) => chunks.push(chunk));
-                  res2.on('end', () => resolve(Buffer.concat(chunks)));
-                  res2.on('error', reject);
-                }).on('error', reject);
-                return;
-              }
-              if (res.statusCode !== 200) {
-                reject(new Error(`HTTP ${res.statusCode}`));
-                return;
-              }
-              const chunks = [];
-              res.on('data', (chunk) => chunks.push(chunk));
-              res.on('end', () => resolve(Buffer.concat(chunks)));
-              res.on('error', reject);
-            });
-            request.on('error', reject);
-            request.setTimeout(15000, () => { request.destroy(); reject(new Error('Timeout')); });
-          });
+          const imageBuffer = await downloadBuffer(bestResult.src);
 
           // Apply background if enabled
           let finalBuffer = await applyBackground(imageBuffer);
