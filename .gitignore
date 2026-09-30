@@ -1,0 +1,8 @@
+node_modules/
+downloads/
+dist/
+.cache/
+*.log
+.DS_Store
+Thumbs.db
+tasas al dia*.png
